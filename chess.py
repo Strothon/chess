@@ -288,43 +288,55 @@ class Pawn(Piece):
     def get_possible_moves(self, board, position, for_attack=False):
         row, col = position
         moves = []
-        
+
         # Direction based on pawn color
         direction = -1 if self.color == PieceColor.WHITE else 1
-        
-        # Forward one square
-        if 0 <= row + direction < BOARD_SIZE:
-            if board.get_piece((row + direction, col)) is None:
+        one_step_row = row + direction
+
+        # Forward moves are only considered for regular move generation
+        if not for_attack and 0 <= one_step_row < BOARD_SIZE:
+            if board.get_piece((one_step_row, col)) is None:
                 # Check for promotion
-                if (row + direction == 0 and self.color == PieceColor.WHITE) or (row + direction == 7 and self.color == PieceColor.BLACK):
+                if (one_step_row == 0 and self.color == PieceColor.WHITE) or (one_step_row == 7 and self.color == PieceColor.BLACK):
                     # Add promotion moves for all possible pieces
                     for piece_type in [PieceType.QUEEN, PieceType.ROOK, PieceType.BISHOP, PieceType.KNIGHT]:
-                        moves.append(Move((row, col), (row + direction, col), self, is_promotion=True, promotion_piece=piece_type))
+                        moves.append(Move((row, col), (one_step_row, col), self, is_promotion=True, promotion_piece=piece_type))
                 else:
-                    moves.append(Move((row, col), (row + direction, col), self))
-                
+                    moves.append(Move((row, col), (one_step_row, col), self))
+
                 # Forward two squares from starting position
                 start_row = 6 if self.color == PieceColor.WHITE else 1
-                if row == start_row and board.get_piece((row + 2*direction, col)) is None:
-                    moves.append(Move((row, col), (row + 2*direction, col), self))
-        
-        # Diagonal captures
+                two_step_row = row + 2 * direction
+                if (row == start_row and 0 <= two_step_row < BOARD_SIZE and
+                        board.get_piece((two_step_row, col)) is None):
+                    moves.append(Move((row, col), (two_step_row, col), self))
+
+        # Diagonal captures and attack squares
         for dc in [-1, 1]:
-            if 0 <= row + direction < BOARD_SIZE and 0 <= col + dc < BOARD_SIZE:
-                end_piece = board.get_piece((row + direction, col + dc))
-                if end_piece is not None and end_piece.color != self.color:
-                    # Check for promotion
-                    if (row + direction == 0 and self.color == PieceColor.WHITE) or (row + direction == 7 and self.color == PieceColor.BLACK):
-                        for piece_type in [PieceType.QUEEN, PieceType.ROOK, PieceType.BISHOP, PieceType.KNIGHT]:
-                            moves.append(Move((row, col), (row + direction, col + dc), self, end_piece, is_promotion=True, promotion_piece=piece_type))
-                    else:
-                        moves.append(Move((row, col), (row + direction, col + dc), self, end_piece))
-                
-                # En passant
-                if board.en_passant_target == (row, col + dc):
-                    captured_pawn = board.get_piece((row, col + dc))
-                    moves.append(Move((row, col), (row + direction, col + dc), self, captured_pawn, is_en_passant=True))
-                    
+            target_row = row + direction
+            target_col = col + dc
+            if not (0 <= target_row < BOARD_SIZE and 0 <= target_col < BOARD_SIZE):
+                continue
+
+            if for_attack:
+                moves.append(Move((row, col), (target_row, target_col), self))
+                continue
+
+            end_piece = board.get_piece((target_row, target_col))
+            if end_piece is not None and end_piece.color != self.color:
+                # Check for promotion
+                if (target_row == 0 and self.color == PieceColor.WHITE) or (target_row == 7 and self.color == PieceColor.BLACK):
+                    for piece_type in [PieceType.QUEEN, PieceType.ROOK, PieceType.BISHOP, PieceType.KNIGHT]:
+                        moves.append(Move((row, col), (target_row, target_col), self, end_piece, is_promotion=True, promotion_piece=piece_type))
+                else:
+                    moves.append(Move((row, col), (target_row, target_col), self, end_piece))
+
+            # En passant capture target
+            if board.en_passant_target == (target_row, target_col):
+                captured_pawn = board.get_piece((row, target_col))
+                if captured_pawn and captured_pawn.color != self.color:
+                    moves.append(Move((row, col), (target_row, target_col), self, captured_pawn, is_en_passant=True))
+
         return moves
 
 class Board:
@@ -518,6 +530,8 @@ class ChessGame:
         self.selected_pos = None
         self.valid_moves = []
         self.clock = pygame.time.Clock()
+        self.large_font = pygame.font.Font(None, 64)
+        self.medium_font = pygame.font.Font(None, 40)
         self.is_promotion_menu_active = False
         self.promotion_move = None
     
@@ -539,10 +553,12 @@ class ChessGame:
             
             if self.is_promotion_menu_active:
                 self.draw_promotion_menu()
-            
+
+            self.draw_game_state()
+
             pygame.display.flip()
             self.clock.tick(60)
-            
+
         pygame.quit()
         sys.exit()
     
@@ -559,7 +575,53 @@ class ChessGame:
                 piece = self.board.get_piece((row, col))
                 if piece:
                     self.screen.blit(piece.image, pygame.Rect(col * SQUARE_SIZE, row * SQUARE_SIZE, SQUARE_SIZE, SQUARE_SIZE))
-    
+
+    def draw_game_state(self):
+        state = self.board.game_state
+        if state == GameState.ACTIVE:
+            return
+
+        if state == GameState.CHECK:
+            message = f"{self._get_color_name(self.board.current_player)} is in check!"
+            banner_height = self.medium_font.get_height() + 20
+            banner_surface = pygame.Surface((WINDOW_SIZE, banner_height), pygame.SRCALPHA)
+            banner_surface.fill((0, 0, 0, 160))
+            self.screen.blit(banner_surface, (0, 0))
+
+            text_surface = self.medium_font.render(message, True, WHITE)
+            text_rect = text_surface.get_rect(center=(WINDOW_SIZE // 2, banner_height // 2))
+            self.screen.blit(text_surface, text_rect)
+            return
+
+        overlay = pygame.Surface((WINDOW_SIZE, WINDOW_SIZE), pygame.SRCALPHA)
+        overlay.fill((0, 0, 0, 200))
+        self.screen.blit(overlay, (0, 0))
+
+        if state == GameState.CHECKMATE:
+            winner_color = PieceColor.WHITE if self.board.current_player == PieceColor.BLACK else PieceColor.BLACK
+            message_lines = ["Checkmate!", f"{self._get_color_name(winner_color)} wins"]
+        elif state == GameState.STALEMATE:
+            message_lines = ["Stalemate", "Draw"]
+        else:
+            message_lines = []
+
+        if not message_lines:
+            return
+
+        line_spacing = 12
+        font_height = self.large_font.get_height()
+        total_height = len(message_lines) * font_height + (len(message_lines) - 1) * line_spacing
+        start_y = WINDOW_SIZE // 2 - total_height // 2
+
+        for index, text in enumerate(message_lines):
+            text_surface = self.large_font.render(text, True, WHITE)
+            center_y = start_y + index * (font_height + line_spacing) + font_height // 2
+            text_rect = text_surface.get_rect(center=(WINDOW_SIZE // 2, center_y))
+            self.screen.blit(text_surface, text_rect)
+
+    def _get_color_name(self, color):
+        return "White" if color == PieceColor.WHITE else "Black"
+
     def highlight_selected(self):
         row, col = self.selected_pos
         rect = pygame.Rect(col * SQUARE_SIZE, row * SQUARE_SIZE, SQUARE_SIZE, SQUARE_SIZE)
